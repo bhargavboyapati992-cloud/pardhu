@@ -8,3 +8,5 @@ __pycache__/
 *.db
 *.zip
 *.txt
+smart-plant-watering/sampleapp/
+smart-plant-watering/n8n_workflows/
