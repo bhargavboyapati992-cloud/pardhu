@@ -1,0 +1,26 @@
+--- TWILIO MESSAGE LOGS ---
+To: +917793929357
+From: +18707704078
+Status: delivered
+Body: Sent from your Twilio trial account - Test SMS from Smart Plant System
+---------------------------
+To: +18707704078
+From: +18707704078
+Status: failed
+Body: Test SMS from Smart Plant System
+---------------------------
+To: +919949805658
+From: +59039149
+Status: delivered
+Body: Sent from your Twilio trial account - 🔥 FIRE ALERT!
+---------------------------
+To: +917075022609
+From: +18707704078
+Status: failed
+Body: 🔥 FIRE ALERT!
+---------------------------
+To: +917793929357
+From: +18707704078
+Status: delivered
+Body: Sent from your Twilio trial account - 🔥 FIRE ALERT!
+---------------------------

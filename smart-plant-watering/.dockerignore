@@ -1,0 +1,10 @@
+node_modules/
+backend/venv/
+backend/.venv/
+.venv/
+venv/
+__pycache__/
+*.pyc
+sql_app.db
+sql_app.zip
+.git/
