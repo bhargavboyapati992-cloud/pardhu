@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'https://969cffac064eff.lhr.life/api';
+const API_URL = import.meta.env.VITE_API_URL || 'https://pardhu-eco6.onrender.com/api';
 
 export const getDashboardData = async () => {
     const response = await axios.get(`${API_URL}/dashboard`);
