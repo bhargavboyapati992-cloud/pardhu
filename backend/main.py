@@ -7,20 +7,73 @@ from database import SessionLocal, engine
 from ai_engine import predictor, interpret_and_decide
 from notifications import send_sms
 from pydantic import BaseModel
-
+import asyncio
+import httpx
+import random
+import datetime
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Smart Plant Watering API")
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     db = SessionLocal()
     try:
         users = crud.get_users(db)
         for u in users:
-            send_sms(u.phone_number, "🌱 Smart Plant Watering System has successfully started!")
+            send_sms(u.phone_number, "🌱 Smart Plant Watering System Simulator has started!")
+        
+        # Pre-seed Data so the dashboard graph isn't empty on load
+        if len(crud.get_latest_sensor_data(db, limit=1)) == 0:
+            base_time = datetime.datetime.utcnow() - datetime.timedelta(minutes=15)
+            moist = 900.0
+            for i in range(15):
+                db_data = models.SensorData(
+                    soil_moisture=moist,
+                    temperature=28.0 + random.uniform(-1, 1),
+                    motor_status=False,
+                    timestamp=base_time + datetime.timedelta(minutes=i)
+                )
+                db.add(db_data)
+                moist -= random.uniform(15, 30)
+            db.commit()
+            
     finally:
         db.close()
+    
+    # Start the hardware background simulator loop
+    asyncio.create_task(hardware_simulator_loop())
+
+async def hardware_simulator_loop():
+    current_moisture = 750.0  # start out decently wet
+    
+    async with httpx.AsyncClient() as client:
+        while True:
+            await asyncio.sleep(60) # Run every 60 seconds
+            
+            # Realistic physics emulation
+            if MOTOR_STATE["is_on"]:
+                current_moisture += random.uniform(100.0, 180.0) # Motor is filling water
+            else:
+                current_moisture -= random.uniform(20.0, 40.0)   # Soil is naturally drying
+            
+            # keep within bounds
+            current_moisture = max(0.0, min(1023.0, current_moisture))
+            current_temp = round(30.0 + random.uniform(-2.0, 2.0), 2)
+            
+            payload = {
+                "soil_moisture": round(current_moisture, 2),
+                "temperature": current_temp,
+                "motor_status": MOTOR_STATE["is_on"]
+            }
+            
+            try:
+                # POST to itself to trigger AI and DB logic naturally!
+                # Using 8000 fallback or PORT env when hosted
+                port = int(os.environ.get("PORT", 8000))
+                await client.post(f"http://127.0.0.1:{port}/api/sensor-data", json=payload)
+            except Exception as e:
+                print(f"Simulator warning: {e}")
 
 app.add_middleware(
     CORSMiddleware,

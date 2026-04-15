@@ -5,3 +5,4 @@ pydantic
 scikit-learn
 twilio
 python-dotenv
+httpx
