@@ -16,9 +16,10 @@ function App() {
     try {
       const res = await getDashboardData();
       setData(res);
-      setLoading(false);
     } catch (e) {
       console.error("Error fetching data", e);
+    } finally {
+      setLoading(false);
     }
   };
 
