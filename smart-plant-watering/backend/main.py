@@ -112,15 +112,8 @@ def receive_sensor_data(data: crud.SensorDataCreate, background_tasks: Backgroun
         data_points = [{"timestamp": d.timestamp, "moisture": d.soil_moisture} for d in latest_data]
         
         predicted = predictor.train_and_predict(data_points)
-        decision = interpret_and_decide(predicted, current_temp=data.temperature, moisture_threshold=600.0, temp_threshold=35.0)
+        decision = interpret_and_decide(predicted, current_moisture=data.soil_moisture, current_temp=data.temperature, moisture_threshold=600.0, temp_threshold=35.0)
 
-        # Immediate response if AI is still gathering the first few data points
-        if decision == "Not enough data":
-            if data.soil_moisture < 600.0:
-                decision = "TURN_ON"
-            else:
-                decision = "KEEP_OFF"
-        
         if decision == "TURN_ON" and not MOTOR_STATE["is_on"]:
             MOTOR_STATE["is_on"] = True
             crud.add_log(db, "ON", "AI Prediction / Threshold")

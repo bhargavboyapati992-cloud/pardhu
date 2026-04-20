@@ -22,9 +22,9 @@ class MoisturePredictor:
 
         self.model.fit(X, y)
 
-        # Predict 1 hour into the future (3600 seconds) from the latest data point
+        # Predict 5 minutes into the future (300 seconds) from the latest data point
         latest_time = data_points[-1]['timestamp']
-        future_time = (latest_time - base_time).total_seconds() + 3600
+        future_time = (latest_time - base_time).total_seconds() + 300
         
         predicted_moisture = self.model.predict([[future_time]])[0]
         
@@ -32,9 +32,14 @@ class MoisturePredictor:
 
 predictor = MoisturePredictor()
 
-def interpret_and_decide(predicted_moisture, current_temp=0.0, moisture_threshold=600.0, temp_threshold=35.0):
+def interpret_and_decide(predicted_moisture, current_moisture=0.0, current_temp=0.0, moisture_threshold=600.0, temp_threshold=35.0):
+    if current_moisture >= moisture_threshold:
+        return "KEEP_OFF"
+    
     if predicted_moisture is None:
-        return "Not enough data"
+        return "TURN_ON" if current_moisture < moisture_threshold else "KEEP_OFF"
+        
     if predicted_moisture < moisture_threshold:
         return "TURN_ON"
+        
     return "KEEP_OFF"
