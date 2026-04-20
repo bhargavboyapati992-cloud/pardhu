@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-sqlalchemy
-pydantic
-scikit-learn
-twilio
-python-dotenv
-httpx
