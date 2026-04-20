@@ -1,13 +1,18 @@
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 import time
 import random
 import urllib.request
 import json
 
-moisture = 600.0
+moisture = 650.0
 temperature = 40.0
 motor_is_on = False
 
-print("🌡 Simulator Started. Emitting data to Backend...")
+print("Simulator Started. Emitting data to Backend...")
+
 
 while True:
     if motor_is_on:
