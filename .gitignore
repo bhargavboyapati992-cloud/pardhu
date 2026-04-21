@@ -10,3 +10,5 @@ __pycache__/
 *.txt
 smart-plant-watering/sampleapp/
 smart-plant-watering/n8n_workflows/
+cloudflared.exe
+*.exe
