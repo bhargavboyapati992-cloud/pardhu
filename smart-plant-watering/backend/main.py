@@ -22,7 +22,7 @@ async def startup_event():
     try:
         users = crud.get_users(db)
         for u in users:
-            send_sms(u.phone_number, "🌱 Smart Plant Watering System Simulator has started!")
+            send_sms(u.phone_number, "[System] Smart Plant Watering System Simulator has started!")
         
         # Pre-seed Data so the dashboard graph isn't empty on load
         if len(crud.get_latest_sensor_data(db, limit=1)) == 0:
@@ -122,7 +122,7 @@ def receive_sensor_data(data: crud.SensorDataCreate, background_tasks: Backgroun
             # We trigger SMS
             users = crud.get_users(db)
             for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "⚠ Soil is dry (below 600). Motor turned ON automatically.")
+                background_tasks.add_task(send_sms, u.phone_number, "[!] Soil is dry (below 600). Motor turned ON automatically.")
                 
         elif MOTOR_STATE["is_on"] and data.soil_moisture >= 1023:
             # Motor stays ON until moisture reaches full saturation (1023), then turns OFF
@@ -130,7 +130,7 @@ def receive_sensor_data(data: crud.SensorDataCreate, background_tasks: Backgroun
             crud.add_log(db, "OFF", "Fully Saturated (1023)")
             users = crud.get_users(db)
             for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "✅ Soil fully saturated (1023). Motor turned OFF automatically.")
+                background_tasks.add_task(send_sms, u.phone_number, "[OK] Soil fully saturated (1023). Motor turned OFF automatically.")
 
     return {"status": "success", "recorded_id": sensor_data.id, "motor_state": MOTOR_STATE["is_on"]}
 
