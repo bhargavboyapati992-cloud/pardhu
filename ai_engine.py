@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 from sklearn.linear_model import LinearRegression
 from datetime import datetime
 
@@ -33,13 +33,13 @@ class MoisturePredictor:
 predictor = MoisturePredictor()
 
 def interpret_and_decide(predicted_moisture, current_moisture=0.0, current_temp=0.0, moisture_threshold=600.0, temp_threshold=35.0):
-    if current_moisture >= moisture_threshold:
-        return "KEEP_OFF"
+    # 1. Primary Threshold: If already below 600, turn ON immediately
+    if current_moisture < moisture_threshold:
+        return "TURN_ON"
     
-    if predicted_moisture is None:
-        return "TURN_ON" if current_moisture < moisture_threshold else "KEEP_OFF"
-        
-    if predicted_moisture < moisture_threshold:
+    # 2. Predictive AI: If predicted to drop below 600 soon, turn ON early
+    if predicted_moisture is not None and predicted_moisture < moisture_threshold:
         return "TURN_ON"
         
+    # 3. Otherwise, keep it OFF
     return "KEEP_OFF"
