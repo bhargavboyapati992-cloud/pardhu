@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
@@ -176,7 +177,6 @@ def create_user(user: crud.UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
     u = crud.create_user(db=db, user=user)
     return {"id": u.id, "name": u.name}
-import os
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
