@@ -178,19 +178,36 @@ def create_user(user: crud.UserCreate, db: Session = Depends(get_db)):
     return {"id": u.id, "name": u.name}
 import os
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
-frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+
 if os.path.exists(frontend_dist):
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
-    app.mount("/vite.svg", StaticFiles(directory=frontend_dist), name="vite_svg")
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
     @app.get("/{full_path:path}")
     def serve_react_app(full_path: str):
         path = os.path.join(frontend_dist, full_path)
         if os.path.isfile(path):
             return FileResponse(path)
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
+        index_file = os.path.join(frontend_dist, "index.html")
+        if os.path.isfile(index_file):
+            return FileResponse(index_file)
+        return JSONResponse(status_code=404, content={"detail": "Index file not found in frontend dist."})
+else:
+    @app.get("/{full_path:path}")
+    def serve_react_app_missing(full_path: str):
+        return JSONResponse(
+            status_code=404, 
+            content={
+                "detail": "Frontend UI Not Built.",
+                "message": "The FastAPI backend is running successfully, but the React frontend 'dist' directory is missing.",
+                "fix_for_render": "In Render, go to your Web Service settings and ensure the Runtime Environment is set to 'Docker' (so it uses your Dockerfile), NOT 'Python 3'.",
+                "local_fix": "If running locally, run 'npm run build' inside the 'frontend' folder to generate the dist directory."
+            }
+        )
 
 if __name__ == "__main__":
     import uvicorn
