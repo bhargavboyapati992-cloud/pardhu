@@ -199,11 +199,14 @@ if os.path.exists(frontend_dist):
 else:
     @app.get("/{full_path:path}")
     def serve_react_app_missing(full_path: str):
+        current_dir_contents = str(os.listdir(os.getcwd())) if os.path.exists(os.getcwd()) else "Unknown"
         return JSONResponse(
             status_code=404, 
             content={
                 "detail": "Frontend UI Not Built.",
                 "message": "The FastAPI backend is running successfully, but the React frontend 'dist' directory is missing.",
+                "resolved_path": str(frontend_dist),
+                "current_dir_contents": current_dir_contents,
                 "fix_for_render": "In Render, go to your Web Service settings and ensure the Runtime Environment is set to 'Docker' (so it uses your Dockerfile), NOT 'Python 3'.",
                 "local_fix": "If running locally, run 'npm run build' inside the 'frontend' folder to generate the dist directory."
             }
