@@ -1,88 +1,30 @@
-from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException
-from sqlalchemy.orm import Session
-from fastapi.middleware.cors import CORSMiddleware
-import models as models
-import crud as crud
-from database import SessionLocal, engine
-from ai_engine import predictor, interpret_and_decide
-from notifications import send_sms
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
-import asyncio
-import httpx
-import random
-import datetime
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+import models
+import schemas
+import crud
+import solver_ortools
+import auth as auth_module
+from fastapi.middleware.cors import CORSMiddleware
+from database import SessionLocal, engine
+
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Smart Plant Watering API")
-
-@app.on_event("startup")
-async def startup_event():
-    db = SessionLocal()
-    try:
-        users = crud.get_users(db)
-        for u in users:
-            send_sms(u.phone_number, "🌱 Smart Plant Watering System Simulator has started!")
-        
-        # Pre-seed Data so the dashboard graph isn't empty on load
-        if len(crud.get_latest_sensor_data(db, limit=1)) == 0:
-            base_time = datetime.datetime.utcnow() - datetime.timedelta(minutes=15)
-            moist = 900.0
-            for i in range(15):
-                db_data = models.SensorData(
-                    soil_moisture=moist,
-                    temperature=28.0 + random.uniform(-1, 1),
-                    motor_status=False,
-                    timestamp=base_time + datetime.timedelta(minutes=i)
-                )
-                db.add(db_data)
-                moist -= random.uniform(15, 30)
-            db.commit()
-            
-    finally:
-        db.close()
-    
-    # Start the hardware background simulator loop
-    asyncio.create_task(hardware_simulator_loop())
-
-async def hardware_simulator_loop():
-    current_moisture = 750.0  # start out decently wet
-    
-    async with httpx.AsyncClient() as client:
-        while True:
-            await asyncio.sleep(60) # Run every 60 seconds
-            
-            # Realistic physics emulation
-            if MOTOR_STATE["is_on"]:
-                current_moisture += random.uniform(100.0, 180.0) # Motor is filling water
-            else:
-                current_moisture -= random.uniform(20.0, 40.0)   # Soil is naturally drying
-            
-            # keep within bounds
-            current_moisture = max(0.0, min(1023.0, current_moisture))
-            current_temp = round(30.0 + random.uniform(-2.0, 2.0), 2)
-            
-            payload = {
-                "soil_moisture": round(current_moisture, 2),
-                "temperature": current_temp,
-                "motor_status": MOTOR_STATE["is_on"]
-            }
-            
-            try:
-                # POST to itself to trigger AI and DB logic naturally!
-                # Using 8000 fallback or PORT env when hosted
-                port = int(os.environ.get("PORT", 8000))
-                await client.post(f"http://127.0.0.1:{port}/api/sensor-data", json=payload)
-            except Exception as e:
-                print(f"Simulator warning: {e}")
+app = FastAPI(title="VIMS Timetable Allocation API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this
-    allow_credentials=False,
+    allow_origins=["*"],    # Restrict to portal domain in production
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ── DB Dependency ──────────────────────────────────────────────────────────────
 def get_db():
     db = SessionLocal()
     try:
@@ -90,143 +32,286 @@ def get_db():
     finally:
         db.close()
 
-class MotorCommand(BaseModel):
-    command: str # "ON" or "OFF"
-    reason: str = "Manual"
+# ── Auth Routes ────────────────────────────────────────────────────────────────
 
-# Global state for motor to simulate IoT state
-MOTOR_STATE = {"is_on": False, "mode": "Auto"} # modes: Auto, Manual
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    grid_value_1: str = ""
+    grid_value_2: str = ""
 
-@app.post("/api/sensor-data")
-def receive_sensor_data(data: crud.SensorDataCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    # 1. Save data
-    sensor_data = crud.add_sensor_data(db, data)
-    
-    # 2. Check AI and thresholds if in Auto Mode
-    if MOTOR_STATE["mode"] == "Auto":
-        # Fetch last 10 points for AI
-        latest_data = crud.get_latest_sensor_data(db, limit=10)
-        # Sort chronologically for AI
-        latest_data.reverse()
-        
-        data_points = [{"timestamp": d.timestamp, "moisture": d.soil_moisture} for d in latest_data]
-        
-        predicted = predictor.train_and_predict(data_points)
-        decision = interpret_and_decide(predicted, current_moisture=data.soil_moisture, current_temp=data.temperature, moisture_threshold=600.0, temp_threshold=35.0)
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    department_id: str
+    display_name: str
+    role: str
+    grid_challenge_1: str
+    grid_challenge_2: str
 
-        if decision == "TURN_ON" and not MOTOR_STATE["is_on"]:
-            MOTOR_STATE["is_on"] = True
-            crud.add_log(db, "ON", "AI Prediction / Threshold")
-            # In a real scenario, we'd send an MQTT / HTTP call to ESP8266 here.
-            # We trigger SMS
-            users = crud.get_users(db)
-            for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "⚠ Soil is predicted to be dry soon or is dry. Motor turned ON automatically.")
-                
-        elif decision == "KEEP_OFF" and MOTOR_STATE["is_on"]:
-            # Turn off immediately when keeping off
-            MOTOR_STATE["is_on"] = False
-            crud.add_log(db, "OFF", "Threshold Met")
-            users = crud.get_users(db)
-            for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "✅ Soil is wet enough. Motor turned OFF automatically.")
-
-    return {"status": "success", "recorded_id": sensor_data.id, "motor_state": MOTOR_STATE["is_on"]}
-
-@app.post("/api/motor-control")
-def control_motor(cmd: MotorCommand, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    if cmd.command not in ["ON", "OFF"]:
-        raise HTTPException(status_code=400, detail="Invalid command")
-    
-    is_on = (cmd.command == "ON")
-    MOTOR_STATE["is_on"] = is_on
-    crud.add_log(db, cmd.command, cmd.reason)
-    
-    # Send SMS manually
-    users = crud.get_users(db)
-    for u in users:
-        background_tasks.add_task(send_sms, u.phone_number, f"Motor was manually turned {cmd.command}.")
-
-    return {"status": "success", "motor_state": MOTOR_STATE["is_on"]}
-
-@app.post("/api/toggle-mode")
-def toggle_mode(db: Session = Depends(get_db)):
-    new_mode = "Manual" if MOTOR_STATE["mode"] == "Auto" else "Auto"
-    MOTOR_STATE["mode"] = new_mode
-    crud.add_log(db, "MODE_CHANGE", f"Switched to {new_mode}")
-    return {"status": "success", "mode": MOTOR_STATE["mode"]}
-
-@app.get("/api/dashboard")
-def get_dashboard(db: Session = Depends(get_db)):
-    latest = crud.get_latest_sensor_data(db, limit=20)
-    latest.reverse() # chronological for Graph
-    
-    logs = crud.get_logs(db, limit=10)
-    
+@app.get("/auth/challenges")
+def get_challenges():
+    """Public endpoint — returns the grid challenge labels so the frontend can display them."""
     return {
-        "motor_state": MOTOR_STATE,
-        "history": [{"time": d.timestamp.strftime("%H:%M:%S"), "moisture": d.soil_moisture, "temperature": d.temperature} for d in latest],
-        "logs": [{"time": l.time.strftime("%H:%M:%S"), "action": l.action, "reason": l.reason} for l in logs]
+        "grid_challenge_1": auth_module.GRID_CHALLENGE_1,
+        "grid_challenge_2": auth_module.GRID_CHALLENGE_2,
+        "grid_enabled":    bool(auth_module.GRID_VALUE_1 or auth_module.GRID_VALUE_2),
     }
 
-@app.post("/api/users")
-def create_user(user: crud.UserCreate, db: Session = Depends(get_db)):
-    db_user = crud.get_user_by_email(db, email=user.email)
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    u = crud.create_user(db=db, user=user)
-    return {"id": u.id, "name": u.name}
-import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+@app.post("/auth/login", response_model=LoginResponse)
+def login(body: LoginRequest):
+    user = auth_module.authenticate_user(
+        body.username, body.password, body.grid_value_1, body.grid_value_2
+    )
+    token = auth_module.create_access_token(user)
+    return LoginResponse(
+        access_token=token,
+        department_id=user["department_id"],
+        display_name=user.get("display_name", user["username"]),
+        role=user["role"],
+        grid_challenge_1=auth_module.GRID_CHALLENGE_1,
+        grid_challenge_2=auth_module.GRID_CHALLENGE_2,
+    )
 
-# Robustly search for the dist folder in multiple locations
-possible_paths = [
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")), # Standard repo structure
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dist")),             # Dropped 'dist' at root
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "dist")),                   # Dropped 'dist' in backend
-    "/opt/render/project/src/frontend/dist",                                              # Render absolute
-    "/opt/render/project/src/dist",                                                       # Render root dist
-]
+@app.post("/auth/logout")
+def logout():
+    """Frontend should delete its token on logout. JWT is stateless."""
+    return {"message": "Logged out successfully"}
 
-frontend_dist = possible_paths[0]
-for p in possible_paths:
-    if os.path.exists(p) and os.path.isdir(p):
-        frontend_dist = p
-        break
+class ForgotPasswordRequest(BaseModel):
+    username: str
+    new_password: str
+    confirm_password: str
 
-if os.path.exists(frontend_dist):
-    assets_dir = os.path.join(frontend_dist, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+@app.post("/auth/forgot-password")
+def forgot_password(body: ForgotPasswordRequest):
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    if len(body.new_password.strip()) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    auth_module.change_password(body.username, body.new_password)
+    return {"message": "Password updated successfully. Please log in with your new password."}
 
-    @app.get("/{full_path:path}")
-    def serve_react_app(full_path: str):
-        path = os.path.join(frontend_dist, full_path)
-        if os.path.isfile(path):
-            return FileResponse(path)
-        index_file = os.path.join(frontend_dist, "index.html")
-        if os.path.isfile(index_file):
-            return FileResponse(index_file)
-        return JSONResponse(status_code=404, content={"detail": "Index file not found in frontend dist."})
-else:
-    @app.get("/{full_path:path}")
-    def serve_react_app_missing(full_path: str):
-        current_dir_contents = str(os.listdir(os.getcwd())) if os.path.exists(os.getcwd()) else "Unknown"
-        return JSONResponse(
-            status_code=404, 
-            content={
-                "detail": "Frontend UI Not Built.",
-                "message": "The FastAPI backend is running successfully, but the React frontend 'dist' directory is missing.",
-                "resolved_path": str(frontend_dist),
-                "current_dir_contents": current_dir_contents,
-                "fix_for_render": "In Render, go to your Web Service settings and ensure the Runtime Environment is set to 'Docker' (so it uses your Dockerfile), NOT 'Python 3'.",
-                "local_fix": "If running locally, run 'npm run build' inside the 'frontend' folder to generate the dist directory."
-            }
+class ChangeUsernameRequest(BaseModel):
+    current_username: str
+    password: str
+    new_username: str
+
+@app.post("/auth/change-username")
+def change_username_route(body: ChangeUsernameRequest):
+    if len(body.new_username.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    auth_module.change_username(body.current_username, body.password, body.new_username)
+    return {"message": "Username updated successfully. Please log in with your new username."}
+
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
+    department_id: str
+    display_name: Optional[str] = ""
+
+@app.post("/auth/signup", response_model=LoginResponse)
+def signup(body: SignupRequest):
+    if body.password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    if len(body.username.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    new_user = auth_module.register_user(
+        body.username, body.password, body.department_id, body.display_name or ""
+    )
+    token = auth_module.create_access_token(new_user)
+    return LoginResponse(
+        access_token=token,
+        department_id=new_user["department_id"],
+        display_name=new_user.get("display_name", new_user["username"]),
+        role=new_user["role"],
+        grid_challenge_1=auth_module.GRID_CHALLENGE_1,
+        grid_challenge_2=auth_module.GRID_CHALLENGE_2,
+    )
+
+class GoogleAuthRequest(BaseModel):
+    credential: str   # Google ID token from GSI
+
+@app.post("/auth/google", response_model=LoginResponse)
+def google_auth(body: GoogleAuthRequest):
+    user = auth_module.google_login(body.credential)
+    token = auth_module.create_access_token(user)
+    return LoginResponse(
+        access_token=token,
+        department_id=user["department_id"],
+        display_name=user.get("display_name", user["username"]),
+        role=user["role"],
+        grid_challenge_1=auth_module.GRID_CHALLENGE_1,
+        grid_challenge_2=auth_module.GRID_CHALLENGE_2,
+    )
+
+# ── Protected Data Routes ──────────────────────────────────────────────────────
+# All routes below require a valid Bearer token.
+
+@app.post("/teachers/", response_model=schemas.Teacher)
+def create_teacher(teacher: schemas.TeacherCreate, db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.create_teacher(db=db, teacher=teacher)
+
+@app.get("/teachers/", response_model=List[schemas.Teacher])
+def read_teachers(skip: int = 0, limit: int = 100, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.get_teachers(db, department_id=x_department_id, skip=skip, limit=limit)
+
+@app.put("/teachers/{item_id}", response_model=schemas.Teacher)
+def update_teacher(item_id: int, teacher: schemas.TeacherCreate, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    updated = crud.update_item(db, models.Teacher, item_id, teacher.model_dump(), x_department_id)
+    if not updated: raise HTTPException(status_code=404, detail="Item not found")
+    return updated
+
+@app.delete("/teachers/{item_id}")
+def delete_teacher(item_id: int, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    if not crud.delete_item(db, models.Teacher, item_id, x_department_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"status": "deleted"}
+
+@app.post("/rooms/", response_model=schemas.Room)
+def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.create_room(db=db, room=room)
+
+@app.get("/rooms/", response_model=List[schemas.Room])
+def read_rooms(skip: int = 0, limit: int = 100, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.get_rooms(db, department_id=x_department_id, skip=skip, limit=limit)
+
+@app.put("/rooms/{item_id}", response_model=schemas.Room)
+def update_room(item_id: int, room: schemas.RoomCreate, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    updated = crud.update_item(db, models.Room, item_id, room.model_dump(), x_department_id)
+    if not updated: raise HTTPException(status_code=404, detail="Item not found")
+    return updated
+
+@app.delete("/rooms/{item_id}")
+def delete_room(item_id: int, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    if not crud.delete_item(db, models.Room, item_id, x_department_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"status": "deleted"}
+
+@app.post("/subjects/", response_model=schemas.Subject)
+def create_subject(subject: schemas.SubjectCreate, db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.create_subject(db=db, subject=subject)
+
+@app.get("/subjects/", response_model=List[schemas.Subject])
+def read_subjects(skip: int = 0, limit: int = 100, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.get_subjects(db, department_id=x_department_id, skip=skip, limit=limit)
+
+@app.put("/subjects/{item_id}", response_model=schemas.Subject)
+def update_subject(item_id: int, subject: schemas.SubjectCreate, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    updated = crud.update_item(db, models.Subject, item_id, subject.model_dump(), x_department_id)
+    if not updated: raise HTTPException(status_code=404, detail="Item not found")
+    return updated
+
+@app.delete("/subjects/{item_id}")
+def delete_subject(item_id: int, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    if not crud.delete_item(db, models.Subject, item_id, x_department_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"status": "deleted"}
+
+@app.post("/tas/", response_model=schemas.TeachingAssistant)
+def create_ta(ta: schemas.TeachingAssistantCreate, db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.create_ta(db=db, ta=ta)
+
+@app.get("/tas/", response_model=List[schemas.TeachingAssistant])
+def read_tas(skip: int = 0, limit: int = 100, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.get_tas(db, department_id=x_department_id, skip=skip, limit=limit)
+
+@app.put("/tas/{item_id}", response_model=schemas.TeachingAssistant)
+def update_ta(item_id: int, ta: schemas.TeachingAssistantCreate, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    updated = crud.update_item(db, models.TeachingAssistant, item_id, ta.model_dump(), x_department_id)
+    if not updated: raise HTTPException(status_code=404, detail="Item not found")
+    return updated
+
+@app.delete("/tas/{item_id}")
+def delete_ta(item_id: int, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    if not crud.delete_item(db, models.TeachingAssistant, item_id, x_department_id):
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"status": "deleted"}
+
+@app.get("/config/", response_model=schemas.ConstraintsConfig)
+def read_config(x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.get_config(db, department_id=x_department_id)
+
+@app.put("/config/", response_model=schemas.ConstraintsConfig)
+def update_config(config: schemas.ConstraintsConfig, x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    return crud.update_config(db, config, department_id=x_department_id)
+
+@app.post("/generate")
+def generate_schedule(solverType: str = "ortools", x_department_id: str = Header(...), db: Session = Depends(get_db), user=Depends(auth_module.require_auth)):
+    config = crud.get_config(db, x_department_id)
+    
+    db_rooms = db.query(models.Room).filter(models.Room.department_id == x_department_id).all()
+    rooms_data = [{"id": r.id, "room_type": r.room_type, "name": r.name} for r in db_rooms]
+    
+    db_mappings = db.query(models.SectionSubjectMapping).filter(models.SectionSubjectMapping.department_id == x_department_id).all()
+    mappings_data = []
+    
+    db_subjects = db.query(models.Subject).filter(models.Subject.department_id == x_department_id).all()
+    subjects_info = {sub.id: {"hours": sub.hours_per_week, "type": sub.type, "name": sub.name} for sub in db_subjects}
+    
+    for m in db_mappings:
+        t_ids = [m.teacher_id]
+        if m.secondary_teacher_id:
+            t_ids.append(m.secondary_teacher_id)
+        mappings_data.append({
+            "m_id": m.id,
+            "section_id": m.section_id,
+            "subject_id": m.subject_id,
+            "teacher_ids": t_ids
+        })
+        
+    if not mappings_data:
+        db_teachers = db.query(models.Teacher).filter(models.Teacher.department_id == x_department_id).all()
+        db_tas = db.query(models.TeachingAssistant).filter(models.TeachingAssistant.department_id == x_department_id).all()
+        
+        if db_subjects and db_teachers:
+            import itertools, re
+            ta_cycle = itertools.cycle(db_tas) if db_tas else None
+            unassigned_subjects = list(db_subjects)
+            
+            for t in db_teachers:
+                match = re.search(r'\((.*?)\)', t.name)
+                assigned_subject_name = match.group(1).strip().lower() if match else None
+                if assigned_subject_name:
+                    for sub in list(unassigned_subjects):
+                        if assigned_subject_name == sub.name.lower() or assigned_subject_name in sub.name.lower():
+                            is_lab = sub.type.lower() in ["lab", "practical", "p"]
+                            t_ids = [t.id]
+                            if is_lab and ta_cycle:
+                                t_ids.append(next(ta_cycle).id)
+                            mappings_data.append({
+                                "m_id": len(mappings_data) + 1,
+                                "section_id": 1,
+                                "subject_id": sub.id,
+                                "teacher_ids": t_ids
+                            })
+                            unassigned_subjects.remove(sub)
+
+            if unassigned_subjects:
+                teacher_cycle = itertools.cycle(db_teachers)
+                for sub in unassigned_subjects:
+                    t = next(teacher_cycle)
+                    is_lab = sub.type.lower() in ["lab", "practical", "p"]
+                    t_ids = [t.id]
+                    if is_lab and ta_cycle:
+                        t_ids.append(next(ta_cycle).id)
+                    mappings_data.append({
+                        "m_id": len(mappings_data) + 1,
+                        "section_id": 1,
+                        "subject_id": sub.id,
+                        "teacher_ids": t_ids
+                    })
+        
+    if solverType == "ortools":
+        res = solver_ortools.generate_timetable(
+            days=config.days_per_week,
+            periods=config.periods_per_day,
+            rooms=rooms_data,
+            mappings=mappings_data,
+            subjects_info=subjects_info,
+            max_consec=config.max_consecutive_classes
         )
-
-if __name__ == "__main__":
-    import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+        return res
+    else:
+        raise HTTPException(status_code=501, detail="FET solver integration pending")
