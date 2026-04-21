@@ -122,15 +122,15 @@ def receive_sensor_data(data: crud.SensorDataCreate, background_tasks: Backgroun
             # We trigger SMS
             users = crud.get_users(db)
             for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "⚠ Soil is predicted to be dry soon or is dry. Motor turned ON automatically.")
+                background_tasks.add_task(send_sms, u.phone_number, "⚠ Soil is dry (below 600). Motor turned ON automatically.")
                 
-        elif decision == "KEEP_OFF" and MOTOR_STATE["is_on"]:
-            # Turn off immediately when keeping off
+        elif MOTOR_STATE["is_on"] and data.soil_moisture >= 1023:
+            # Motor stays ON until moisture reaches full saturation (1023), then turns OFF
             MOTOR_STATE["is_on"] = False
-            crud.add_log(db, "OFF", "Threshold Met")
+            crud.add_log(db, "OFF", "Fully Saturated (1023)")
             users = crud.get_users(db)
             for u in users:
-                background_tasks.add_task(send_sms, u.phone_number, "✅ Soil is wet enough. Motor turned OFF automatically.")
+                background_tasks.add_task(send_sms, u.phone_number, "✅ Soil fully saturated (1023). Motor turned OFF automatically.")
 
     return {"status": "success", "recorded_id": sensor_data.id, "motor_state": MOTOR_STATE["is_on"]}
 
