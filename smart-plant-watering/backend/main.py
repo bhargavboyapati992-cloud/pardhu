@@ -180,7 +180,20 @@ import os
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+# Robustly search for the dist folder in multiple locations
+possible_paths = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")), # Standard repo structure
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dist")),             # Dropped 'dist' at root
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "dist")),                   # Dropped 'dist' in backend
+    "/opt/render/project/src/frontend/dist",                                              # Render absolute
+    "/opt/render/project/src/dist",                                                       # Render root dist
+]
+
+frontend_dist = possible_paths[0]
+for p in possible_paths:
+    if os.path.exists(p) and os.path.isdir(p):
+        frontend_dist = p
+        break
 
 if os.path.exists(frontend_dist):
     assets_dir = os.path.join(frontend_dist, "assets")
